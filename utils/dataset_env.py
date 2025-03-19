@@ -67,9 +67,11 @@ class ReplayBuffer:
         self._size += n_transitions
         self._pointer = min(self._size, n_transitions)
 
-    def sample(self, indices=None):
-        if indices is None:
-            indices = np.random.randint(0, min(self._size, self._pointer), size=self.batch_size)
+    def sample(self, batch_size=None, indices=None):
+        if indices is None and batch_size is None:
+            indices = np.random.randint(0, min(self._size, self._pointer), size=self._batch_size)
+        elif indices is None:
+            indices = np.random.randint(0, min(self._size, self._pointer), size=batch_size)
         states = self._states[indices]
         actions = self._actions[indices]
         rewards = self._rewards[indices]
@@ -194,7 +196,7 @@ class DelayBuffer:
             'dones': deque(maxlen=self._delay+1),
         }
         # for i in trange(n_transitions):
-        for i in trange(1000):
+        for i in trange(50000):
             delay_seq["states"].append(dataset["observations"][i])
             delay_seq["actions"].append(dataset["actions"][i])
             delay_seq["rewards"].append(dataset["rewards"][i])
