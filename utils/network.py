@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import trange
+from einops import rearrange
 
 class AutoEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, latent_dim):
@@ -47,6 +48,7 @@ class MLP_Dynamic(nn.Module):
     def forward(self, z, a):
         z_ = self.dynamic(torch.cat([z, a], dim=-1))
         return z_
+
 
 class GRU_Dynamic(nn.Module):
     def __init__(self, latent_dim, condition_dim, hidden_dim, num_layers=3):
@@ -120,6 +122,7 @@ class Actor(nn.Module):
         mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, mean
 
+
 class Critic(nn.Module):
     def __init__(self, latent_dim, action_dim):
         super().__init__()
@@ -135,6 +138,99 @@ class Critic(nn.Module):
     def forward(self, x, a):
         x = torch.cat([x, a], -1)
         return self.critic(x)
+
+
+class Scalar(nn.Module):
+    def __init__(self, init_value: float):
+        super().__init__()
+        self.constant = nn.Parameter(torch.tensor(init_value, dtype=torch.float32))
+
+    def forward(self) -> nn.Parameter:
+        return self.constant
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, dim, min_timescale=2.0, max_timescale=1e4):
+        super().__init__()
+        freqs = torch.arange(0, dim, min_timescale)
+        inv_freqs = max_timescale ** (-freqs / dim)
+        self.register_buffer("inv_freqs", inv_freqs)
+
+    def forward(self, seq_len):
+        seq = torch.arange(seq_len - 1, -1, -1.0)
+        sinusoidal_inp = rearrange(seq, "n -> n ()") * rearrange(self.inv_freqs, "d -> () d")
+        pos_emb = torch.cat((sinusoidal_inp.sin(), sinusoidal_inp.cos()), dim=-1)
+        return pos_emb
+
+
+class MultiHeadAttentionXL(nn.Module):
+    """Multi Head Attention without dropout inspired by https://github.com/aladdinpersson/Machine-Learning-Collection"""
+
+    def __init__(self, embed_dim, num_heads):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_size = embed_dim // num_heads
+
+        assert self.head_size * num_heads == embed_dim, "Embedding dimension needs to be divisible by the number of heads"
+
+        self.values = nn.Linear(self.head_size, self.head_size, bias=False)
+        self.keys = nn.Linear(self.head_size, self.head_size, bias=False)
+        self.queries = nn.Linear(self.head_size, self.head_size, bias=False)
+        self.fc_out = nn.Linear(self.num_heads * self.head_size, embed_dim)
+
+
+    def forward(self, values, keys, query, mask):
+        N = query.shape[0]
+        value_len, key_len, query_len = values.shape[1], keys.shape[1], query.shape[1]
+
+        values = values.reshape(N, value_len, self.num_heads, self.head_size)
+        keys = keys.reshape(N, key_len, self.num_heads, self.head_size)
+        query = query.reshape(N, query_len, self.num_heads, self.head_size)
+
+        values = self.values(values)  # (N, value_len, heads, head_dim)
+        keys = self.keys(keys)  # (N, key_len, heads, head_dim)
+        queries = self.queries(query)  # (N, query_len, heads, heads_dim)
+
+        # Dot-product
+        energy = torch.einsum("nqhd,nkhd->nhqk", [queries, keys])
+
+        # Mask padded indices so their attention weights become 0
+        if mask is not None:
+            energy = energy.masked_fill(mask.unsqueeze(1).unsqueeze(1) == 0, float("-1e20"))  # -inf causes NaN
+
+        # Normalize energy values and apply softmax to retrieve the attention scores
+        attention = torch.softmax(
+            energy / (self.embed_dim ** (1 / 2)), dim=3
+        )  # attention shape: (N, heads, query_len, key_len)
+
+        # Scale values by attention weights
+        out = torch.einsum("nhql,nlhd->nqhd", [attention, values]).reshape(N, query_len, self.num_heads * self.head_size)
+
+        return self.fc_out(out), attention
+    
+
+class TransformerLayerXL(nn.Module):
+    def __init__(self, dim, num_heads):
+        super().__init__()
+        self.attention = MultiHeadAttentionXL(dim, num_heads)
+        self.layer_norm_q = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        self.layer_norm_attn = nn.LayerNorm(dim)
+        self.fc_projection = nn.Sequential(nn.Linear(dim, dim), nn.ReLU())
+
+    def forward(self, value, key, query, mask):
+        # Pre-layer normalization (post-layer normalization is usually less effective)
+        query_ = self.layer_norm_q(query)
+        value = self.norm_kv(value)
+        key = value  # K = V -> self-attention
+        attention, attention_weights = self.attention(value, key, query_, mask)  # MHA
+        x = attention + query  # Skip connection
+        x_ = self.layer_norm_attn(x)  # Pre-layer normalization
+        forward = self.fc_projection(x_)  # Forward projection
+        out = forward + x  # Skip connection
+        return out, attention_weights
+
 
 class TransformerBlock(nn.Module):
     def __init__(
@@ -180,43 +276,45 @@ class TransformerBlock(nn.Module):
         return x
     
 
-class TRANS_Dynamic_v1(nn.Module):
+class TRANSXL_Dynamic(nn.Module):
     def __init__(
         self,
         latent_dim,
         condition_dim,
-        seq_len,
         hidden_dim,
+        max_seq_len,
+        positional_encoding,
         num_layers=10,
         num_heads=4,
-        attention_dropout=0.1,
-        residual_dropout=0.1,
-        hidden_dropout=0.1,
     ):
         super().__init__()
 
         self.latent_dim = latent_dim
         self.condition_dim = condition_dim
-        self.seq_len = seq_len
         self.hidden_dim = hidden_dim
+        self.max_seq_len = max_seq_len
+        self.positional_encoding = positional_encoding
 
-        # self.condition_layer = nn.Linear(condition_dim, latent_dim, bias=False)
+        self.condition_layer = nn.Linear(condition_dim, latent_dim, bias=False)
+        self.reward_layer = nn.Linear(1, latent_dim, bias=False)
 
-        self.hidden_emb = nn.Linear(latent_dim + condition_dim, hidden_dim, bias=False)
-        self.timestep_emb = nn.Embedding(seq_len, hidden_dim)
+        self.hidden_emb = nn.Linear(latent_dim + latent_dim + latent_dim, hidden_dim, bias=False)
 
-        self.hidden_drop = nn.Dropout(hidden_dropout)
+        # self.timestep_emb = nn.Embedding(seq_len, hidden_dim)
+        if positional_encoding == 'absolute':
+            self.timestep_emb = PositionalEncoding(hidden_dim)
+        elif positional_encoding == 'learned':
+            self.timestep_emb = nn.Parameter(torch.randn(max_seq_len, hidden_dim))
+
+        # self.hidden_drop = nn.Dropout(hidden_dropout)
         self.hidden_norm = nn.LayerNorm(hidden_dim)
         self.out_norm = nn.LayerNorm(hidden_dim)
 
         self.blocks = nn.ModuleList(
             [
-                TransformerBlock(
-                    seq_len=seq_len,
-                    hidden_dim=hidden_dim,
+                TransformerLayerXL(
+                    dim=hidden_dim,
                     num_heads=num_heads,
-                    attention_dropout=attention_dropout,
-                    residual_dropout=residual_dropout,
                 )
                 for _ in range(num_layers)
             ]
@@ -224,6 +322,7 @@ class TRANS_Dynamic_v1(nn.Module):
         self.out_layer = nn.Linear(hidden_dim, latent_dim, bias=False)
 
         self.apply(self._init_weights)
+
 
     @staticmethod
     def _init_weights(module: nn.Module):
@@ -235,26 +334,35 @@ class TRANS_Dynamic_v1(nn.Module):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
 
-    def forward(self, latents, actions, timesteps, masks):
 
+    def forward(self, latents, actions, rewards, memories, memory_indices, masks):
         batch_size, seq_len = actions.shape[0], actions.shape[1]
-
         latents = latents.repeat(1, seq_len, 1)
-        timesteps = timesteps.repeat(batch_size, 1)
-        # actions_emb = self.condition_layer(actions)
-        concat_latents = torch.concat((latents, actions), dim=-1)
+        # timesteps = timesteps.repeat(batch_size, 1)
+        actions_emb = self.condition_layer(actions)
+        rewards_emb = self.reward_layer(rewards)
+        concat_latents = torch.concat((latents, actions_emb, rewards_emb), dim=-1)
 
-        time_emb = self.timestep_emb(timesteps)
+        # time_emb = self.timestep_emb(timesteps)
+        if self.positional_encoding == 'absolute':
+            time_emb = self.timestep_emb(self.max_seq_len)[memory_indices]
+        elif self.positional_encoding == 'learned':
+            time_emb = self.timestep_emb[memory_indices]
+        memories = memories + time_emb.unsqueeze(2)
 
         z = self.hidden_emb(concat_latents) + time_emb
         z = self.hidden_norm(z)
-        z = self.hidden_drop(z)
 
-        for block in self.blocks:
-            z = block(z, padding_mask=masks)
+        out_memories = []
+        for i, block in enumerate(self.blocks):
+            out_memories.append(z.detach())
+            z, attention_weights = block(memories, memories, z, masks)
+            z = z.squeeze()
         z_ = self.out_norm(z)
         z_ = self.out_layer(z_)
-        return z_
+        
+        return z_, torch.stack(out_memories, dim=1)
+
 
 
 class TRANS_Dynamic(nn.Module):
@@ -281,6 +389,7 @@ class TRANS_Dynamic(nn.Module):
         self.reward_layer = nn.Linear(1, latent_dim, bias=False)
 
         self.hidden_emb = nn.Linear(latent_dim + latent_dim + latent_dim, hidden_dim, bias=False)
+
         self.timestep_emb = nn.Embedding(seq_len, hidden_dim)
 
         self.hidden_drop = nn.Dropout(hidden_dropout)
@@ -303,6 +412,7 @@ class TRANS_Dynamic(nn.Module):
 
         self.apply(self._init_weights)
 
+
     @staticmethod
     def _init_weights(module: nn.Module):
         if isinstance(module, (nn.Linear, nn.Embedding)):
@@ -312,6 +422,7 @@ class TRANS_Dynamic(nn.Module):
         elif isinstance(module, nn.LayerNorm):
             torch.nn.init.zeros_(module.bias)
             torch.nn.init.ones_(module.weight)
+
 
     def forward(self, latents, actions, rewards, timesteps, masks):
         batch_size, seq_len = actions.shape[0], actions.shape[1]
@@ -411,27 +522,6 @@ class TRANS_Belief(nn.Module):
         x_ = self.decoder(z)
         return x_
     
-    # def forward(self, input, conditions, masks):
-    #     latents = self.encode(input)
-    #     if latents.dim() == 2:
-    #         latents = latents.unsqueeze(1)
-    #     latents = latents.repeat(1, self.seq_len, 1)
-    #     latents_actions = torch.concat((latents, conditions), dim=-1)
-    #     batch_size = latents_actions.shape[0]
-    #     timesteps = self.timesteps.repeat(batch_size, 1).to(latents_actions.device)
-    #     time_emb = self.timestep_emb(timesteps)
-
-    #     z = self.hidden_emb(latents_actions) + time_emb
-    #     z = self.hidden_norm(z)
-    #     z = self.hidden_drop(z)
-
-    #     for block in self.blocks:
-    #         z = block(z, padding_mask=masks)
-    #     z = self.out_norm(z)
-    #     z = self.out_latent(z)
-    #     x_rec = self.decode(z)
-    #     return z, x_rec
-    
     def auto_encode(self, x):
         z = self.encode(x)
         x_ = self.decode(z)
@@ -505,28 +595,47 @@ class TRANS_Belief(nn.Module):
         return loss
 
 
-if __name__ == "__main__":
-    dataset_name = "halfcheetah-random-v2"
-
-    from dataset_env import make_replay_buffer_env
-    replay_buffer, env = make_replay_buffer_env(dataset_name)
-    state_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.shape[0]
-
-    auto_encoder = AutoEncoder(input_dim=state_dim, hidden_dim=256, latent_dim=32).to("cuda")
-    ae_optimizer = optim.Adam(auto_encoder.parameters(), lr=1e-4)
-
-    for epoch in trange(1000):
-        for _ in range(1000):
-            states, actions, rewards, next_states, dones = replay_buffer.sample()
-            states = states.to("cuda")
-            rec_states, _ = auto_encoder(states)
-            ae_loss = F.mse_loss(states, rec_states)
-            ae_optimizer.zero_grad()
-            ae_loss.backward()
-            ae_optimizer.step()
 
 
-        print(f"ae {ae_loss.item()}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# if __name__ == "__main__":
+#     dataset_name = "halfcheetah-random-v2"
+
+#     from dataset_env import make_replay_buffer_env
+#     replay_buffer, env = make_replay_buffer_env(dataset_name)
+#     state_dim = env.observation_space.shape[0]
+#     action_dim = env.action_space.shape[0]
+
+#     auto_encoder = AutoEncoder(input_dim=state_dim, hidden_dim=256, latent_dim=32).to("cuda")
+#     ae_optimizer = optim.Adam(auto_encoder.parameters(), lr=1e-4)
+
+#     for epoch in trange(1000):
+#         for _ in range(1000):
+#             states, actions, rewards, next_states, dones = replay_buffer.sample()
+#             states = states.to("cuda")
+#             rec_states, _ = auto_encoder(states)
+#             ae_loss = F.mse_loss(states, rec_states)
+#             ae_optimizer.zero_grad()
+#             ae_loss.backward()
+#             ae_optimizer.step()
+
+
+#         print(f"ae {ae_loss.item()}")
 
 

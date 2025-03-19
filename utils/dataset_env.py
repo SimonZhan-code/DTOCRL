@@ -26,7 +26,6 @@ def wrap_env(env, state_mean, state_std, reward_scale=1.0):
     env = gym.wrappers.RecordEpisodeStatistics(env)
     env.state_mean = state_mean
     env.state_std = state_std
-    
     return env
 
 class ReplayBuffer:
@@ -86,8 +85,23 @@ class ReplayBuffer:
             self._size // self._batch_size
         )
 
-    def add_transition(self):
-        raise NotImplementedError
+    def add_transition(self, traj_dict):
+        states = traj_dict["states"]
+        actions = traj_dict["actions"]
+        rewards = traj_dict["rewards"]
+        next_states = traj_dict["next_states"]
+        dones = traj_dict["dones"]
+        n_transitions = len(states)
+        if self._pointer + n_transitions > self._buffer_size:
+            self._pointer = 0
+        self._states[self._pointer:self._pointer+n_transitions] = states
+        self._actions[self._pointer:self._pointer+n_transitions] = actions
+        self._rewards[self._pointer:self._pointer+n_transitions] = rewards
+        self._next_states[self._pointer:self._pointer+n_transitions] = next_states
+        self._dones[self._pointer:self._pointer+n_transitions] = dones
+        self._pointer += n_transitions
+        self._size = min(self._size + n_transitions, self._buffer_size)
+
 
 class TrajectoryBuffer:
     def __init__(self, dataset, device="cpu"):
@@ -137,6 +151,7 @@ class TrajectoryBuffer:
     def add_transition(self):
         raise NotImplementedError
 
+
 class DelayBuffer:
     def __init__(self, dataset, buffer_size=1e7, batch_size=512, device="cpu", delay=5):
         buffer_size = dataset["observations"].shape[0]
@@ -178,14 +193,13 @@ class DelayBuffer:
             'rewards': deque(maxlen=self._delay+1),
             'dones': deque(maxlen=self._delay+1),
         }
-        for i in trange(n_transitions):
-        # for i in trange(1000):
+        # for i in trange(n_transitions):
+        for i in trange(1000):
             delay_seq["states"].append(dataset["observations"][i])
             delay_seq["actions"].append(dataset["actions"][i])
             delay_seq["rewards"].append(dataset["rewards"][i])
             delay_seq["dones"].append(np.logical_or(dataset["terminals"][i], dataset["timeouts"][i]))
             if len(delay_seq['states']) != self._delay+1:
-                # padding
                 padding_length = self._delay+1 - len(delay_seq['states'])
                 self._states[self._size] = torch.cat(
                     (self._to_tensor(np.array(list(delay_seq["states"]))),
@@ -218,9 +232,11 @@ class DelayBuffer:
                 }
 
 
-    def sample(self, indices=None):
-        if indices is None:
+    def sample(self, indices=None, batch_size=None):
+        if indices is None and batch_size is None:
             indices = np.random.randint(0, self._size, size=self._batch_size)
+        elif indices is None:
+            indices = np.random.randint(0, self._size, size=batch_size)
         states = self._states[indices]
         actions = self._actions[indices]
         rewards = self._rewards[indices]
@@ -239,7 +255,8 @@ class DelayBuffer:
     def add_transition(self):
         raise NotImplementedError
 
-def make_replay_buffer_env(dataset_name):
+
+def make_replay_buffer_env(dataset_name, batch_size):
     env = gym.make(dataset_name)
     # dataset = d4rl.qlearning_dataset(env)
     dataset = env.get_dataset()
@@ -247,15 +264,10 @@ def make_replay_buffer_env(dataset_name):
     dataset["observations"] = normalize_data(dataset["observations"], state_mean, state_std)
     dataset["next_observations"] = normalize_data(dataset["next_observations"], state_mean, state_std)
     
-    action_mean, action_std = compute_mean_std(dataset["actions"], eps=1e-7)
-    dataset["actions"] = normalize_data(dataset["actions"], action_mean, action_std)
-
-    reward_mean, reward_std = compute_mean_std(dataset["rewards"], eps=1e-7)
-    dataset["rewards"] = normalize_data(dataset["rewards"], reward_mean, reward_std)
-
     env = wrap_env(env, state_mean=state_mean, state_std=state_std)
-    replay_buffer = ReplayBuffer(dataset)
+    replay_buffer = ReplayBuffer(dataset, batch_size=batch_size)
     return replay_buffer, env
+
 
 def make_trajectory_buffer_env(dataset_name):
     env = gym.make(dataset_name)
@@ -267,6 +279,7 @@ def make_trajectory_buffer_env(dataset_name):
     env = wrap_env(env, state_mean=state_mean, state_std=state_std)
     replay_buffer = TrajectoryBuffer(dataset)
     return replay_buffer, env
+
 
 def make_delay_buffer_env(dataset_name, delay, batch_size, state_mean=None, state_std=None):
     env = gym.make(dataset_name)
@@ -283,18 +296,6 @@ def make_delay_buffer_env(dataset_name, delay, batch_size, state_mean=None, stat
     delay_buffer = DelayBuffer(dataset=dataset, batch_size=batch_size, delay=delay)
     return delay_buffer, env
 
-if __name__ == "__main__":
-    dataset_name = "hopper-random-v2"
-    delay = 100
-    batch_size = 32
 
-    # replay_buffer, env = make_replay_buffer_env(dataset_name)
-    # batch = replay_buffer.sample()
 
-    # traj_buffer, env = make_trajectory_buffer_env(dataset_name)
-    # traj = traj_buffer.sample()
-
-    delay_buffer, env = make_delay_buffer_env(dataset_name, delay, batch_size)
-    batch = delay_buffer.sample()
-    # print(batch)
 

@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 import random
+
+
 class ReplayBuffer():
     def __init__(self, buffer_size, observation_dim, action_dim):
         super().__init__()
@@ -18,10 +20,10 @@ class ReplayBuffer():
 
     def store(self, obs, action, reward, next_obs, done):
         self.buffer['obs'][self.buffer_ptr] = obs
-        self.buffer['action'][self.buffer_ptr] = torch.FloatTensor(action)
-        self.buffer['reward'][self.buffer_ptr] = torch.tensor(reward, dtype=torch.float32).unsqueeze(0)
+        self.buffer['action'][self.buffer_ptr] = action
+        self.buffer['reward'][self.buffer_ptr] = reward
         self.buffer['next_obs'][self.buffer_ptr] = next_obs
-        self.buffer['done'][self.buffer_ptr] = torch.tensor(done, dtype=torch.float32).unsqueeze(0)
+        self.buffer['done'][self.buffer_ptr] = done
 
         self.buffer_ptr += 1
         if self.buffer_ptr >= self.buffer_size:
@@ -38,6 +40,8 @@ class ReplayBuffer():
         b_next_obs = self.buffer['next_obs'][indices].to(device)
         b_done = self.buffer['done'][indices].to(device)
         return b_obs, b_action, b_reward, b_next_obs, b_done
+    
+    
 
 class LatentBuffer():
     def __init__(self, buffer_size, observation_dim, latent_dim, action_dim):
@@ -261,7 +265,6 @@ class BeliefBuffer():
 
 
         return b_obs, b_action, b_reward, b_next_obs, b_done, b_belief_obs, b_next_belief_obs, b_belief_actions, b_next_belief_actions, b_belief_masks, b_next_belief_masks, b_belief_targets, b_next_belief_targets
-
 
 
 class MultiStepBuffer():
