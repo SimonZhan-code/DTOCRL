@@ -195,8 +195,8 @@ class DelayBuffer:
             'rewards': deque(maxlen=self._delay+1),
             'dones': deque(maxlen=self._delay+1),
         }
-        # for i in trange(n_transitions):
-        for i in trange(50000):
+        for i in trange(n_transitions):
+        # for i in trange(50000):
             delay_seq["states"].append(dataset["observations"][i])
             delay_seq["actions"].append(dataset["actions"][i])
             delay_seq["rewards"].append(dataset["rewards"][i])

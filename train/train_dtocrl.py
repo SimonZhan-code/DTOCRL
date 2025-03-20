@@ -24,6 +24,7 @@ from collections import deque, defaultdict
 import gym
 import random
 
+SYN_RATIO = 0.2
 
 def construct_dict_from_tuple(data, device):
     data_dict = {}
@@ -159,7 +160,7 @@ class DTOCRL():
 
     def train_dynamic(self):
         self.belief_buffer.generate_sample_prior()
-        for indices in tqdm(self.belief_buffer._sample_prior):
+        for indices in self.belief_buffer._sample_prior:
             states, actions, rewards, dones, masks = self.belief_buffer.sample(indices)
             states = states.to(self.device)
             actions = actions.to(self.device)
@@ -193,15 +194,15 @@ class DTOCRL():
             belief_actions = belief_actions.to(self.device)
             belief_rewards = belief_rewards.to(self.device)
             belief_masks = belief_masks[:, 1:, 0].to(self.device)
-
-            latents = self.auto_encoder.encode(belief_states)
-            timesteps = torch.arange(0, self.config['delay'], dtype=torch.int32).to(self.device)
-            pred_latents = self.latent_dynamic(latents=latents[:, :1, :], 
-                             actions=belief_actions[:, :self.config['delay'], :],
-                             rewards=belief_rewards[:, :self.config['delay'], :],
-                             timesteps=timesteps,
-                             masks=belief_masks)
-            pred_states = self.auto_encoder.decode(pred_latents)
+            with torch.no_grad():
+                latents = self.auto_encoder.encode(belief_states)
+                timesteps = torch.arange(0, self.config['delay'], dtype=torch.int32).to(self.device)
+                pred_latents = self.latent_dynamic(latents=latents[:, :1, :], 
+                                actions=belief_actions[:, :self.config['delay'], :],
+                                rewards=belief_rewards[:, :self.config['delay'], :],
+                                timesteps=timesteps,
+                                masks=belief_masks)
+                pred_states = self.auto_encoder.decode(pred_latents)
             curr_obs = belief_states[:, 0, :]
             for i in range(self.config['delay']):
                 action = belief_actions[:, i, :]
@@ -461,9 +462,9 @@ if __name__ == "__main__":
         "residual_dropout": [0.1],
         "hidden_dropout": [0.1],
         "soft_update_factor": [5e-3],
-        "learn_start": [int(1e3)],
+        "learn_start": [int(1e2)],
         "rollout_freq": [int(1e3)],
-        "num_rollout": [int(1e2)],
+        "num_rollout": [int(1e3)],
         "evaluate_freq": [int(1e4)],
         "num_evaluation": [10],
         "delay": [int(8)],
@@ -496,14 +497,15 @@ if __name__ == "__main__":
         state_dict = trainer.state_dict()
         torch.save(state_dict, f"{config['exp_tag']}/models.pth")
         _ = trainer.rollout(trainer.config['num_rollout'])
-
+        
         for i in trange(config['total_step']):
-            trainer.train_dynamic()
+            # trainer.train_dynamic()
             if i % config['rollout_freq'] == 0:
                 _ = trainer.rollout(config['num_rollout'])
 
             real_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
-            synthetic_data = trainer.synthetic_data_buffer.sample(batch_size=trainer.config['batch_size'])
+            # synthetic_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
+            synthetic_data = trainer.synthetic_data_buffer.sample(batch_size=int(trainer.config['batch_size']*SYN_RATIO), device=trainer.device)
             real_batch = construct_dict_from_tuple(real_data, trainer.config['device'])
             synthetic_batch = construct_dict_from_tuple(synthetic_data, trainer.config['device'])
             trainer.train(real_batch, synthetic_batch)
