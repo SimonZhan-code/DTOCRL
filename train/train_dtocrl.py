@@ -400,7 +400,7 @@ class DTOCRL():
 
     def logging(self):
         for k in self.log_metric.keys():
-            self.logger.add_scalar(k, self.log_metric[k], global_step=self.global_step)
+            self.logger.add_scalar(k, self.log_metric[k])
         if self.wandb:
             wandb.log(self.log_metric)
         self.log_metric = {}
@@ -409,24 +409,24 @@ class DTOCRL():
     def state_dict(self) -> Dict[str, Any]:
         return {
             "actor": self.actor.state_dict(),
-            "critic1": self.critic_1.state_dict(),
-            "critic2": self.critic_2.state_dict(),
-            "critic1_target": self.target_1.state_dict(),
-            "critic2_target": self.target_2.state_dict(),
-            "critic_1_optimizer": self.critic_1_optimizer.state_dict(),
-            "critic_2_optimizer": self.critic_2_optimizer.state_dict(),
+            # "critic1": self.critic_1.state_dict(),
+            # "critic2": self.critic_2.state_dict(),
+            # "critic1_target": self.target_1.state_dict(),
+            # "critic2_target": self.target_2.state_dict(),
+            # "critic_1_optimizer": self.critic_1_optimizer.state_dict(),
+            # "critic_2_optimizer": self.critic_2_optimizer.state_dict(),
             "actor_optim": self.actor_optimizer.state_dict(),
-            "sac_log_alpha": self.log_alpha,
-            "sac_log_alpha_optim": self.alpha_optimizer.state_dict(),
-            "cql_log_alpha": self.log_alpha_prime,
-            "cql_log_alpha_optim": self.alpha_prime_optimizer.state_dict(),
+            # "sac_log_alpha": self.log_alpha,
+            # "sac_log_alpha_optim": self.alpha_optimizer.state_dict(),
+            # "cql_log_alpha": self.log_alpha_prime,
+            # "cql_log_alpha_optim": self.alpha_prime_optimizer.state_dict(),
             "auto_encoder": self.auto_encoder.state_dict(),
             "latent_dynamic": self.latent_dynamic.state_dict(),
             "dynamic_optimizer": self.dynamic_optimizer.state_dict(),
         }
 
 
-    def load_trans_auto_encoder(self, path):
+    def load_models(self, path):
         checkpoint = torch.load(f"{path}/models.pth", map_location=torch.device('cpu'))
         self.auto_encoder.load_state_dict(checkpoint['auto_encoder'])
         self.auto_encoder.eval()
@@ -434,6 +434,9 @@ class DTOCRL():
         self.latent_dynamic.load_state_dict(checkpoint['latent_dynamic'])
         self.latent_dynamic.eval()
         print('loaded latent dynamic')
+        self.actor.load_state_dict(checkpoint['actor'])
+        self.actor.eval()
+        print('loaded actor')
 
     
     
@@ -473,7 +476,7 @@ if __name__ == "__main__":
         "lagrange_threshold": [10.0],
         "cql_temp": [1.0],
         "cql_alpha": [0.2],
-        "wandb": [False],
+        "wandb": [True],
         "backup_entropy": [False],
         "cql_max_target_backup": [False],
         "cql_weight": [1.0],
@@ -481,20 +484,17 @@ if __name__ == "__main__":
     configs = get_configs(configs)
     for config in configs:
         
-        config['exp_tag'] = f"logs/delayed_cql/{config['dynamic_type']}/{config['env_name']}/{config['delay']}/SEED_{config['seed']}"
+        config['exp_tag'] = f"logs/dt-corl/{config['dynamic_type']}/{config['env_name']}/{config['delay']}/SEED_{config['seed']}"
         # if os.path.exists(config['exp_tag']):
         #     continue
         #Test Initialization
         trainer = DTOCRL(config)
-        #Test train_dynamic
-        # trainer.train_dynamic()
-        #Test rollout
-        trainer.evaluate()
-        # traj_dict = trainer.rollout(1)
-        #Test train
+        
         for _ in trange(trainer.config['learn_start']):
             trainer.train_dynamic()
             trainer.logging()
+        state_dict = trainer.state_dict()
+        torch.save(state_dict, f"{config['exp_tag']}/models.pth")
         _ = trainer.rollout(trainer.config['num_rollout'])
 
         for i in trange(config['total_step']):
@@ -503,12 +503,14 @@ if __name__ == "__main__":
                 _ = trainer.rollout(config['num_rollout'])
 
             real_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
-            synthetic_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
+            synthetic_data = trainer.synthetic_data_buffer.sample(batch_size=trainer.config['batch_size'])
             real_batch = construct_dict_from_tuple(real_data, trainer.config['device'])
             synthetic_batch = construct_dict_from_tuple(synthetic_data, trainer.config['device'])
             trainer.train(real_batch, synthetic_batch)
             if i % config['evaluate_freq'] == 0:
                 trainer.evaluate()
+                state_dict = trainer.state_dict()
+                torch.save(state_dict, f"{config['exp_tag']}/models.pth")
             trainer.logging()
         
         
