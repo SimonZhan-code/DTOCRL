@@ -24,7 +24,7 @@ from collections import deque, defaultdict
 import gym
 import random
 
-SYN_RATIO = 0.2
+SYN_RATIO = 1
 
 def construct_dict_from_tuple(data, device):
     data_dict = {}
@@ -184,8 +184,8 @@ class DTOCRL():
 
 
     def rollout(self, num_rollout):
-        self.auto_encoder.eval()
-        self.latent_dynamic.eval()
+        # self.auto_encoder.eval()
+        # self.latent_dynamic.eval()
         traj_dict = defaultdict(list)
         for _ in range(num_rollout):
             # indices = random.choice(self.belief_buffer._sample_prior)
@@ -217,8 +217,8 @@ class DTOCRL():
                 traj_dict['done'].append(belief_dones[:, i, :])
                 curr_obs = next_obs
         # self.synthetic_data_buffer.add_transition(traj_dict)
-        self.auto_encoder.train()
-        self.latent_dynamic.train()
+        # self.auto_encoder.train()
+        # self.latent_dynamic.train()
         return traj_dict    
 
 
@@ -391,8 +391,10 @@ class DTOCRL():
                 if done:
                     self.log_metric['eval_r'].append(info['episode']['r'])
                     self.log_metric['eval_l'].append(info['episode']['l'])
-                    
-        self.log_metric['eval_r'] = np.mean(self.log_metric['eval_r'])
+
+        eval_score = np.mean(self.log_metric['eval_r'])
+        normalized_eval_score = self.env.get_normalized_score(eval_score)          
+        self.log_metric['eval_r'] = normalized_eval_score
         self.log_metric['eval_l'] = np.mean(self.log_metric['eval_l'])
         print(f"Eval Reward: {self.log_metric['eval_r']}, Eval Length: {self.log_metric['eval_l']}")
 
@@ -481,6 +483,8 @@ if __name__ == "__main__":
         "backup_entropy": [False],
         "cql_max_target_backup": [False],
         "cql_weight": [1.0],
+        "fake_real_ratio": [1.0],
+        "dynamic_train_threshold": [2e5],
     }
     configs = get_configs(configs)
     for config in configs:
@@ -501,11 +505,14 @@ if __name__ == "__main__":
         for i in trange(config['total_step']):
             # trainer.train_dynamic()
             if i % config['rollout_freq'] == 0:
+                # if i < config['dynamic_train_threshold']:
+                #     trainer.train_dynamic()
                 _ = trainer.rollout(config['num_rollout'])
 
             real_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
             # synthetic_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
-            synthetic_data = trainer.synthetic_data_buffer.sample(batch_size=int(trainer.config['batch_size']*SYN_RATIO), device=trainer.device)
+            synthetic_data = trainer.synthetic_data_buffer.sample(batch_size=int(
+                trainer.config['batch_size']*trainer.config['fake_real_ratio']), device=trainer.device)
             real_batch = construct_dict_from_tuple(real_data, trainer.config['device'])
             synthetic_batch = construct_dict_from_tuple(synthetic_data, trainer.config['device'])
             trainer.train(real_batch, synthetic_batch)
