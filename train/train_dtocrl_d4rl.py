@@ -507,8 +507,8 @@ if __name__ == "__main__":
         for i in trange(config['total_step']):
             # trainer.train_dynamic()
             if i % config['rollout_freq'] == 0:
-                if i < config['dynamic_train_threshold']:
-                    trainer.train_dynamic()
+                # if i < config['dynamic_train_threshold']:
+                #     trainer.train_dynamic()
                 _ = trainer.rollout(config['num_rollout'])
 
             real_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
