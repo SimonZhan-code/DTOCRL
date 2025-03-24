@@ -22,7 +22,7 @@ from rich import print
 from copy import deepcopy
 from collections import deque, defaultdict
 import gym
-import random
+import random, uuid
 
 SYN_RATIO = 1
 
@@ -134,12 +134,13 @@ class DTOCRL():
             lr=self.alpha_lr,
         )
         
-        run_name = f"{config['env_name']}_Delay_{config['delay']}_Seed_{config['seed']}"
+        run_name = f"{config['env_name']}_Delay_{config['delay']}_Seed_{config['seed']}_ID_{uuid.uuid4()}"
         group_name = f'DT-CORL-D4RL'
 
         if self.wandb:
             wandb.init(
-                project="Offline_Delayed_RL", 
+                # project="Offline_Delayed_RL", 
+                project="OfflineRL_Trans",
                 name=run_name,
                 group=group_name,
                 config=config,
@@ -449,7 +450,8 @@ if __name__ == "__main__":
     configs = {
         "env_name": ["hopper-medium-v2"],
         "device":  ["cuda" if torch.cuda.is_available() else "cpu"],
-        "seed": [0, 1, 2],  # Sets Gym, PyTorch and Numpy seeds
+        # "seed": [1, 2, 3],  # Sets Gym, PyTorch and Numpy seeds
+        "seed": [1],
         "gamma": [0.99],
         "alpha": [0.2],
         "total_step": [int(1e6)],  # Max time steps to run environment
@@ -486,12 +488,12 @@ if __name__ == "__main__":
         "cql_max_target_backup": [False],
         "cql_weight": [1.0],
         "fake_real_ratio": [1.0],
-        "dynamic_train_threshold": [2e5],
+        "dynamic_train_threshold": [1e5],
     }
     configs = get_configs(configs)
     for config in configs:
         
-        config['exp_tag'] = f"logs/dt-corl/{config['dynamic_type']}/{config['env_name']}/{config['delay']}/SEED_{config['seed']}"
+        config['exp_tag'] = f"logs/dt-corl/{config['env_name']}/{config['delay']}/SEED_{config['seed']}"
         # if os.path.exists(config['exp_tag']):
         #     continue
         #Test Initialization
@@ -507,8 +509,8 @@ if __name__ == "__main__":
         for i in trange(config['total_step']):
             # trainer.train_dynamic()
             if i % config['rollout_freq'] == 0:
-                # if i < config['dynamic_train_threshold']:
-                #     trainer.train_dynamic()
+                if i < config['dynamic_train_threshold']:
+                    trainer.train_dynamic()
                 _ = trainer.rollout(config['num_rollout'])
 
             real_data = trainer.replay_buffer.sample(batch_size=trainer.config['batch_size'])
@@ -523,6 +525,11 @@ if __name__ == "__main__":
                 state_dict = trainer.state_dict()
                 torch.save(state_dict, f"{config['exp_tag']}/models.pth")
             trainer.logging()
+        wandb.finish()
+        trainer.logger.close()
+        print(f'Finished training for Seed{config["seed"]}-{config["env_name"]}')
+        print(f'======================================================================')
+        
         
         
     
