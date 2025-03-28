@@ -97,7 +97,7 @@ def train(config):
 
     dataset = d4rl.qlearning_dataset(env)
 
-    keep_best_trajectories(dataset, config["frac"], config["discount"])
+    # keep_best_trajectories(dataset, config["frac"], config["discount"])
 
     if config["normalize"]:
         state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-3)
@@ -180,7 +180,7 @@ def train(config):
         # Evaluate episode
         if (t + 1) % config["eval_freq"] == 0:
             print(f"Time steps: {t + 1}")
-            eval_scores = eval_actor(
+            eval_scores, eval_length = eval_actor(
                 env,
                 actor,
                 delay_step=config["delay_step"],
@@ -192,8 +192,9 @@ def train(config):
             )
             eval_score = eval_scores.mean()
             eval_std = eval_scores.std()
-            normalized_eval_std = env.get_normalized_score(eval_std) * 100.0
-            normalized_eval_score = env.get_normalized_score(eval_score) * 100.0
+            eval_len = eval_length.mean()
+            normalized_eval_std = env.get_normalized_score(eval_std)
+            normalized_eval_score = env.get_normalized_score(eval_score)
             evaluations.append(normalized_eval_score)
             print("---------------------------------------")
             print(
@@ -208,15 +209,17 @@ def train(config):
                     os.path.join(config["checkpoints_path"], f"checkpoint_{t}.pt"),
                 )
 
-            logger.add_scalar("training/normalized_score", 
-                              normalized_eval_score, 
-                              int(trainer.total_it))
+            logger.add_scalar("eval/eval_r", normalized_eval_score, int(t))
+            logger.add_scalar("eval/eval_r_std", normalized_eval_std, int(t))
+            logger.add_scalar("training/eval_len", eval_len, int(t))
             wandb.log({
-                "normalized_score": normalized_eval_score, 
-                "normalized_std": normalized_eval_std,
+                "eval_r": normalized_eval_score, 
+                "eval_r_std": normalized_eval_std,
+                "eval_l": eval_len,
             })
 
     logger.close()
+    wandb.finish()
 
 if __name__ == "__main__":
     config_lists = {
@@ -224,25 +227,22 @@ if __name__ == "__main__":
         # Experiment
         "device":  ["cuda" if torch.cuda.is_available() else "cpu"],
         "env": [
-                # "halfcheetah-random-v2",
-                "halfcheetah-medium-v2", 
-                "halfcheetah-expert-v2",
-                "halfcheetah-medium-expert-v2",
-                "halfcheetah-medium-replay-v2",
-
-                # "hopper-random-v2",
                 "hopper-medium-v2", 
                 "hopper-expert-v2",
                 "hopper-medium-expert-v2",
                 "hopper-medium-replay-v2",
+
+                "halfcheetah-medium-v2", 
+                "halfcheetah-expert-v2",
+                "halfcheetah-medium-expert-v2",
+                "halfcheetah-medium-replay-v2",
             
-                # "walker2d-random-v2",
                 "walker2d-medium-v2", 
                 "walker2d-expert-v2",
                 "walker2d-medium-expert-v2",
                 "walker2d-medium-replay-v2",
                 ],  # OpenAI gym environment name
-        "seed": [0],  # Sets Gym, PyTorch and Numpy seeds
+        "seed": [1, 2, 3],  # Sets Gym, PyTorch and Numpy seeds
         "eval_freq": [int(1e4)],  # How often (time steps) we evaluate
         "n_episodes": [10],  # How many episodes run during evaluation
         "max_timesteps": [int(1e6)],  # Max time steps to run environment
@@ -260,9 +260,9 @@ if __name__ == "__main__":
         "delay_step":[8],
         "augment": [True],
         # Wandb logging
-        "project": ["Delayed-Offline-RL"],
-        "group": ["Aug-BCL-D4RL"],
-        "name": ["Delayed-BC"]
+        "project": ["Offline_Delayed_RL"],
+        "group": ["Delayed-BC"],
+        "name": ["BC-D4RL"]
     }
     list_configs = get_list_configs(config_lists)
     for config in tqdm(list_configs):

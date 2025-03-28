@@ -30,9 +30,9 @@ def eval_actor(
 ) -> np.ndarray:
     env.seed(seed)
     actor.eval()
-    episode_rewards = []
+    episode_rewards, episode_length = [], []
     for _ in range(n_episodes):
-        state, done = env.reset(), False
+        state, done, length = env.reset(), False, 0
         episode_reward = 0.0
         states_buffer = deque(maxlen=delay_step+1)
         states_buffer.append(state)
@@ -50,10 +50,12 @@ def eval_actor(
             states_buffer.append(state)
             actions_buffer.append(action)
             episode_reward += reward
+            length += 1
         episode_rewards.append(episode_reward)
+        episode_length.append(length)
 
     actor.train()
-    return np.asarray(episode_rewards)
+    return np.asarray(episode_rewards), np.asarray(episode_length)
 
 
 

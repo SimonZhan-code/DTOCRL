@@ -498,9 +498,10 @@ def train(config):
         if step % config["eval_every"] == 0 or step == config["update_steps"] - 1:
             model.eval()
             normalized_scores = []
+            episode_len = []
             for target_return in config["target_returns"]:
                 eval_env.seed(config["seed"])
-                eval_returns = []
+                eval_returns, eval_lens = [], []
                 for _ in trange(config["eval_episodes"], desc="Evaluation", leave=False):
                     eval_return, eval_len = eval_rollout(
                         model=model,
@@ -513,14 +514,15 @@ def train(config):
                     )
                     # unscale for logging & correct normalized score computation
                     eval_returns.append(eval_return / config["reward_scale"])
-
-                normalized_scores.append(np.mean(eval_env.get_normalized_score(np.array(eval_returns)) * 100))
-                
-            logger.add_scalar("training/normalized_score", np.max(normalized_scores), step)
+                    eval_lens.append(eval_len)
+                normalized_scores.append(np.mean(eval_env.get_normalized_score(np.array(eval_returns))))
+                episode_len.append(np.mean(eval_lens))
+            logger.add_scalar("eval/normalized_score", np.max(normalized_scores), step)
+            logger.add_scalar("eval/episode_len", np.maximum(episode_len), step)
             print(np.max(normalized_scores))
             wandb.log({
-                "d4rl_normalized_score": np.mean(normalized_scores), 
-                "d4rl_normalized_std": np.std(normalized_scores),
+                "eval_r": np.max(normalized_scores), 
+                "eval_l": np.max(episode_len),
                 })
             model.train()
 
@@ -532,6 +534,7 @@ def train(config):
         }
         torch.save(checkpoint, os.path.join(config["checkpoints_path"], "dt_checkpoint.pt"))
     logger.close()
+    wandb.finish()
 
 if __name__ == "__main__":
     config_lists = {
@@ -539,19 +542,22 @@ if __name__ == "__main__":
         # Experiment
         "device":  ["cuda" if torch.cuda.is_available() else "cpu"],
         "env": [
-                # "halfcheetah-medium-v2", 
-                # "halfcheetah-medium-expert-v2",
-                # "halfcheetah-expert-v2",
+                "hopper-medium-v2", 
+                "hopper-expert-v2",
+                "hopper-medium-expert-v2",
+                "hopper-medium-replay-v2",
 
-                "hopper-medium-v2",
-                # "hopper-medium-expert-v2",
-                # "halfcheetah-expert-v2",
-
-                # "walker2d-medium-v2",
-                # "walker2d-medium-expert-v2",
-                # "halfcheetah-expert-v2",
+                "halfcheetah-medium-v2", 
+                "halfcheetah-expert-v2",
+                "halfcheetah-medium-expert-v2",
+                "halfcheetah-medium-replay-v2",
+            
+                "walker2d-medium-v2", 
+                "walker2d-expert-v2",
+                "walker2d-medium-expert-v2",
+                "walker2d-medium-replay-v2",
                 ],  # OpenAI gym environment name
-        "seed": [1],  # Sets Gym, PyTorch and Numpy seeds
+        "seed": [1, 2, 3],  # Sets Gym, PyTorch and Numpy seeds
         # Decision Transformer
         "embedding_dim": [128],
         "num_layers": [3],
@@ -579,9 +585,9 @@ if __name__ == "__main__":
         "delay_step":[8],
         "augment": [True],
         # Wandb Naming
-        "project": ["Delayed-Offline-RL"],
-        "group": ["Aug-DT-D4RL"],
-        "name": ["Delayed-DT"]
+        "project": ["Offline_Delayed_RL"],
+        "group": ["Delayed-DT"],
+        "name": ["DT-D4RL"]
     }
     list_configs = get_list_configs(config_lists)
     for config in tqdm(list_configs):

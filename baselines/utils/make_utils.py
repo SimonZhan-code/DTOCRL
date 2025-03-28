@@ -46,6 +46,7 @@ def set_seed(
     torch.use_deterministic_algorithms(deterministic_torch)
 
 def wandb_init(config: dict) -> None:
+    # name = f'{config["name"]}_{config['env']}_Delay_{config['delay']}_Seed_{config['seed']}_ID_{uuid.uuid4()}'
     wandb.init(
         config=config,
         project=config["project"],

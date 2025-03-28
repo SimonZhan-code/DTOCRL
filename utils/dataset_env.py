@@ -2,10 +2,12 @@ import d4rl
 import gym
 import numpy as np
 import torch
+from copy import deepcopy
 from tqdm import trange
 from rich import print
 import gym
 from collections import deque
+from typing import Dict, Tuple
 
 def compute_mean_std(data, eps=1e-3):
     mean = data.mean(0)
@@ -27,6 +29,22 @@ def wrap_env(env, state_mean, state_std, reward_scale=1.0):
     env.state_mean = state_mean
     env.state_std = state_std
     return env
+
+
+def return_reward_range(dataset: Dict, max_episode_steps: int) -> Tuple[float, float]:
+    returns, lengths = [], []
+    ep_ret, ep_len = 0.0, 0
+    for r, d in zip(dataset["rewards"], dataset["terminals"]):
+        ep_ret += float(r)
+        ep_len += 1
+        if d or ep_len == max_episode_steps:
+            returns.append(ep_ret)
+            lengths.append(ep_len)
+            ep_ret, ep_len = 0.0, 0
+    lengths.append(ep_len)  # but still keep track of number of steps
+    assert sum(lengths) == len(dataset["rewards"])
+    return min(returns), max(returns)
+
 
 class ReplayBuffer:
     def __init__(self, dataset, buffer_size=1e7, batch_size=512, device="cpu"):
@@ -63,7 +81,8 @@ class ReplayBuffer:
         self._actions[:n_transitions] = self._to_tensor(dataset["actions"])
         self._rewards[:n_transitions] = self._to_tensor(dataset["rewards"]).unsqueeze(-1)
         self._next_states[:n_transitions] = self._to_tensor(dataset["next_observations"])
-        self._dones[:n_transitions] = self._to_tensor(np.logical_or(dataset["terminals"], dataset["timeouts"])).unsqueeze(-1)
+        # self._dones[:n_transitions] = self._to_tensor(np.logical_or(dataset["terminals"], dataset["timeouts"])).unsqueeze(-1)
+        self._dones[:n_transitions] = self._to_tensor(dataset["terminals"]).unsqueeze(-1)
         self._size += n_transitions
         self._pointer = min(self._size, n_transitions)
 
@@ -200,7 +219,8 @@ class DelayBuffer:
             delay_seq["states"].append(dataset["observations"][i])
             delay_seq["actions"].append(dataset["actions"][i])
             delay_seq["rewards"].append(dataset["rewards"][i])
-            delay_seq["dones"].append(np.logical_or(dataset["terminals"][i], dataset["timeouts"][i]))
+            # delay_seq["dones"].append(np.logical_or(dataset["terminals"][i], dataset["timeouts"][i]))
+            delay_seq["dones"].append(dataset["terminals"][i])
             if len(delay_seq['states']) != self._delay+1:
                 padding_length = self._delay+1 - len(delay_seq['states'])
                 self._states[self._size] = torch.cat(
@@ -299,5 +319,39 @@ def make_delay_buffer_env(dataset_name, delay, batch_size, state_mean=None, stat
     return delay_buffer, env
 
 
+def make_replay_buffer_adroit_env(dataset_name, batch_size):
+    env = gym.make(dataset_name)
+    dataset = d4rl.qlearning_dataset(env)
+    # dataset = env.get_dataset()
+    state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-7)
+    dataset["observations"] = normalize_data(dataset["observations"], state_mean, state_std)
+    dataset["next_observations"] = normalize_data(dataset["next_observations"], state_mean, state_std)
+    # dataset["next_observations"] = deepcopy(dataset["observations"])
+    # for i in range(len(dataset["observations"]) - 1):
+    #     if dataset["terminals"][i] or dataset["timeouts"][i]:
+    #         dataset["next_observations"][i] = dataset["observations"][i]
+    #     else:
+    #         dataset["next_observations"][i] = dataset["observations"][i+1]
+    env = wrap_env(env, state_mean=state_mean, state_std=state_std)
+    replay_buffer = ReplayBuffer(dataset, batch_size=batch_size)
+    return replay_buffer, env
 
 
+def make_delay_buffer_adroit_env(dataset_name, delay, batch_size, state_mean=None, state_std=None):
+    env = gym.make(dataset_name)
+    dataset = d4rl.qlearning_dataset(env)
+    dataset = env.get_dataset()
+    if state_mean is None and state_std is None:
+        state_mean, state_std = compute_mean_std(dataset["observations"], eps=1e-7)
+    else:
+        print(f'mean {state_mean}, std {state_std}')
+    dataset["observations"] = normalize_data(dataset["observations"], state_mean, state_std)
+    # dataset["next_observations"] = deepcopy(dataset["observations"])
+    # for i in range(len(dataset["observations"]) - 1):
+    #     if dataset["terminals"][i] or dataset["timeouts"][i]:
+    #         dataset["next_observations"][i] = dataset["observations"][i]
+    #     else:
+    #         dataset["next_observations"][i] = dataset["observations"][i+1]
+    env = wrap_env(env, state_mean=state_mean, state_std=state_std)
+    delay_buffer = DelayBuffer(dataset=dataset, batch_size=batch_size, delay=delay)
+    return delay_buffer, env
